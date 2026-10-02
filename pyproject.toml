@@ -47,6 +47,11 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::UserWarning"]
+markers = [
+    "slow: requires a full Detectron2 model assembly; run on Delta/DeltaAI",
+    "scarlet2: requires a working scarlet2 + JAX install",
+    "needs_training: behavioural check that requires a trained checkpoint; not CI",
+]
 
 [tool.black]
 line-length = 100

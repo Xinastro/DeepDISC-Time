@@ -1,0 +1,49 @@
+# Pinned environment for the scarlet2-TD reference baseline.
+#
+# Why pinned, and why a separate file
+# -----------------------------------
+# scarlet2-TD is the reference standard for Experiment B, and that comparison
+# will be the most scrutinised part of the paper. The adapter in
+# ``baselines/scarlet2_td.py`` already contains compatibility branches because
+# the upstream API has moved during development. An unpinned baseline is a
+# baseline whose numbers change without the code changing, and a reviewer cannot
+# distinguish that from a mistake.
+#
+# Separate from the main dependencies because scarlet2 brings JAX, which must be
+# matched to the local CUDA toolkit. Installing it alongside the PyTorch stack in
+# one environment has not been shown to work. See the CUDA note below.
+#
+# !!! EVERY VERSION BELOW IS A PLACEHOLDER !!!
+# They have never been resolved against a working install, because no GPU
+# environment with scarlet2 was available when this file was written. Pin the
+# versions that actually work, record them here, and commit that change in the
+# same PR as the first Experiment B numbers so the two can never drift apart.
+# Then run tests/test_scarlet2_integration.py and make it pass.
+
+# scarlet2 @ git+https://github.com/pmelchior/scarlet2@<COMMIT SHA, NOT A TAG>
+# jax[cuda12]==<VERSION>
+# jaxlib==<VERSION>
+# equinox==<VERSION>
+# numpyro==<VERSION>        # if the score-based morphology prior is used
+# optax==<VERSION>
+
+# CUDA note, which is not hypothetical
+# ------------------------------------
+# The DeltaAI environment currently runs PyTorch cu130 against CUDA 13.1.1, while
+# the scarlet2 path calls for a JAX CUDA 12 build. Whether those coexist in one
+# conda environment or need two is an open question worth an hour of
+# investigation before committing a week to it. If two environments are needed,
+# Experiment B must still time both methods on the same GPU in the same job, so
+# plan for two environments and one allocation rather than two allocations.
+
+# Record alongside every Experiment B result
+# ------------------------------------------
+#   - the resolved versions of everything above
+#   - nvidia-smi driver and CUDA runtime
+#   - the GPU model
+#   - per-scene convergence diagnostics and iteration counts
+#   - the exact scarlet2 configuration object
+# ``SceneSolution.diagnostics`` is the place for the per-scene part. A frontier
+# plot without these is not reproducible, and the first question a referee asks
+# about an unfavourable throughput number is whether the baseline was configured
+# competently.
