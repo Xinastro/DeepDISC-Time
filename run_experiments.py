@@ -121,7 +121,7 @@ def write_csv(records, path):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--data", required=True)
-    p.add_argument("--experiment", choices=["a", "b", "c", "d"], required=True)
+    p.add_argument("--experiment", choices=["a", "a-sub", "b", "b1", "b2", "c", "d"], required=True)
     p.add_argument("--model", default="outputs/run/model.pth")
     p.add_argument("--static-model", default=None,
                    help="checkpoint trained with --pool-mode mean (the Experiment A null)")
@@ -132,12 +132,142 @@ def main():
     p.add_argument("--nosed-model", default=None,
                    help="checkpoint trained with --no-predict-sed; adds the control "
                         "arm to Experiment D")
+    p.add_argument("--flux-fractions", default="0.25,0.5,1.0,2.0,4.0",
+                   help="Experiment a-sub: mean nuclear flux in units of the "
+                        "nominal detection threshold. Values below 1.0 are the "
+                        "sub-threshold regime where the detection claim lives.")
     p.add_argument("--gradients", default="0,0.25,0.5,0.75,1.0",
                    help="Experiment D: bulge-minus-disc colour gradients, magnitudes")
     p.add_argument("--n-scenes", type=int, default=40,
                    help="Experiment D: scenes generated per gradient value")
+    p.add_argument("--with-coadd", action="store_true",
+                   help="Experiment A: add the true inverse-variance coadd arm. "
+                        "The --static-model arm is mean FEATURE pooling, which is "
+                        "not detection on a coadd; without this flag the result "
+                        "cannot be described as beating a static coadd detector.")
+    p.add_argument("--match-method", default="greedy_score",
+                   choices=["greedy_score", "hungarian"],
+                   help="source matching rule. Report both in severe blends: a "
+                        "conclusion that survives only one is a conclusion about "
+                        "the matcher.")
+    p.add_argument("--timing-repeats", type=int, default=5,
+                   help="Experiment B: timed repeats, median reported")
+    p.add_argument("--timing-warmup", type=int, default=2,
+                   help="Experiment B: discarded warm-up iterations")
+    p.add_argument("--split", default=None,
+                   help="split manifest JSON from scripts/make_split.py. Strongly "
+                        "recommended: without it the experiment runs on whatever "
+                        "sequences.pkl contains, which for injected data usually "
+                        "means the same hosts and visits appeared in training.")
+    p.add_argument("--split-part", default="test",
+                   help="which part of the split to evaluate on")
+    p.add_argument("--supervision", default="injection",
+                   choices=["injection", "scarlet2", "mixed", "none"],
+                   help="where the evaluated model's training labels came from. "
+                        "Decides eligibility for an independent-accuracy claim: a "
+                        "model distilled from scarlet2 can answer B1 but not B2.")
+    p.add_argument("--manifest-out", default=None,
+                   help="write a RunManifest JSON (environment, versions, split "
+                        "digest) next to the results")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args()
+
+    if args.experiment in ("b1", "b2"):
+        # B1 and B2 are different questions and must not be run as one.
+        # B1 asks whether an amortized model reproduces scarlet2-TD solutions
+        # faster; the reference is the teacher's output and training on scarlet2
+        # labels is fair. B2 asks which method recovers injection truth; a model
+        # distilled from scarlet2 in the same domain is ineligible.
+        from deepdisc_time.eval.experiments import (
+            experiment_b1_distillation,
+            experiment_b2_truth_accuracy,
+        )
+
+        temporal = model_backend(
+            load_model(args.model, "attn_var", args.device, role="temporal"), args.device
+        )
+        os.makedirs(args.out, exist_ok=True)
+
+        if args.experiment == "b1":
+            if not args.with_scarlet2:
+                raise SystemExit(
+                    "B1 is a comparison against scarlet2-TD solutions, so it "
+                    "requires --with-scarlet2. Note that the scarlet2 adapter "
+                    "has never been executed: run "
+                    "tests/test_scarlet2_integration.py first."
+                )
+            from deepdisc_time.baselines import Scarlet2TDBackend
+
+            df = experiment_b1_distillation(
+                seqs,
+                temporal,
+                lambda x: Scarlet2TDBackend().fit_many(x),
+                n_repeats=args.timing_repeats,
+                n_warmup=args.timing_warmup,
+                device=args.device,
+            )
+            out = os.path.join(args.out, "experiment_b1_distillation.csv")
+        else:
+            backends = {"temporal": temporal}
+            if args.static_model:
+                backends["static"] = model_backend(
+                    load_model(args.static_model, "mean", args.device, role="static null"),
+                    args.device,
+                )
+            if args.with_coadd:
+                from deepdisc_time.baselines import CoaddDetectionBackend
+
+                backends["coadd"] = CoaddDetectionBackend().fit_many
+            if args.with_scarlet2:
+                from deepdisc_time.baselines import Scarlet2TDBackend
+
+                backends["scarlet2_td"] = lambda x: Scarlet2TDBackend().fit_many(x)
+            df = experiment_b2_truth_accuracy(
+                seqs, backends, supervision=args.supervision
+            )
+            out = os.path.join(args.out, "experiment_b2_truth_accuracy.csv")
+
+        df.to_csv(out, index=False)
+        print(df.to_string(index=False))
+        print(f"wrote {out} ({len(df)} rows)")
+        return
+
+    if args.experiment == "a-sub":
+        # The sub-threshold detection sweep: the measurement the detection claim
+        # needs. Generates its own scenes, because the point is a controlled
+        # sweep of mean nuclear flux across the detection threshold at fixed
+        # variability amplitude, which a stored dataset does not provide.
+        from deepdisc_time.eval.experiments import experiment_a_sub_threshold
+
+        temporal = model_backend(
+            load_model(args.model, "attn_var", args.device, role="temporal"), args.device
+        )
+        backends = {"temporal": temporal}
+        if args.static_model:
+            backends["static"] = model_backend(
+                load_model(args.static_model, "mean", args.device, role="static null"),
+                args.device,
+            )
+        if args.with_coadd:
+            from deepdisc_time.baselines import CoaddDetectionBackend
+
+            backends["coadd"] = CoaddDetectionBackend().fit_many
+        fr = tuple(float(x) for x in args.flux_fractions.split(","))
+        df = experiment_a_sub_threshold(
+            backends, flux_fractions=fr, n_scenes=args.n_scenes
+        )
+        os.makedirs(args.out, exist_ok=True)
+        out = os.path.join(args.out, "experiment_a_sub_threshold.csv")
+        df.to_csv(out, index=False)
+        print(df.to_string(index=False))
+        print(f"wrote {out} ({len(df)} rows)")
+        print(
+            "\nRead this as completeness against mean flux, one line per arm. The "
+            "claim lives in the rows with sub_threshold=True: if the temporal and "
+            "static curves coincide there, the result is about deblending and "
+            "photometry of candidate detections, not about detection."
+        )
+        return
 
     if args.experiment == "d":
         # Experiment D generates its own scenes: the nucleus must be exactly
@@ -177,9 +307,50 @@ def main():
 
     with open(os.path.join(args.data, "sequences.pkl"), "rb") as f:
         seqs = pickle.load(f)
+
+    split_digest = split_strategy = ""
+    if args.split:
+        from deepdisc_time.data.splits import SplitManifest, audit_split
+
+        man = SplitManifest.load(args.split)
+        split_digest, split_strategy = man.digest(), man.strategy
+        parts = man.split(seqs, strict=False)
+        rep = audit_split(man, seqs, pair=("train", args.split_part))
+        print(f"split {man.name!r} ({man.strategy}) digest {man.digest()}")
+        for w in rep["warnings"]:
+            print(f"  LEAKAGE WARNING: {w}")
+        if not rep["warnings"]:
+            print("  audit: clean on every channel measured")
+        seqs = parts.get(args.split_part, [])
+        if not seqs:
+            raise SystemExit(
+                f"split part {args.split_part!r} is empty. Parts available: "
+                f"{sorted(parts)}"
+            )
+        print(f"evaluating on the {args.split_part!r} part")
+    else:
+        print(
+            "WARNING: no --split given. For injected data this usually means the "
+            "same hosts, backgrounds and visits appeared in training, which "
+            "inflates every number below. Build one with scripts/make_split.py."
+        )
+
     if args.limit:
         seqs = seqs[: args.limit]
     print(f"{len(seqs)} sequences")
+
+    if args.manifest_out:
+        from deepdisc_time.eval.provenance import RunManifest
+
+        RunManifest(
+            run_name=os.path.basename(args.out.rstrip("/")) or "run",
+            supervision=args.supervision,
+            experiment=args.experiment,
+            split_digest=split_digest,
+            split_strategy=split_strategy,
+            config=vars(args),
+        ).save(args.manifest_out)
+        print(f"wrote run manifest {args.manifest_out}")
 
     temporal = model_backend(
         load_model(args.model, "attn_var", args.device, role="temporal"), args.device
@@ -197,7 +368,13 @@ def main():
         )
 
     if args.experiment == "a":
-        recs = experiment_a_detection(seqs, temporal, static)
+        coadd = None
+        if args.with_coadd:
+            from deepdisc_time.baselines import CoaddDetectionBackend
+
+            cb = CoaddDetectionBackend()
+            coadd = cb.fit_many
+        recs = experiment_a_detection(seqs, temporal, static, coadd_backend=coadd)
         write_csv(recs, os.path.join(args.out, "experiment_a_detection.csv"))
         return
 
@@ -213,6 +390,23 @@ def main():
             backends["scarlet2_td"] = lambda s: Scarlet2TDBackend().fit_many(s)
         recs = experiment_b_amortization(seqs, backends)
         write_csv(recs, os.path.join(args.out, "experiment_b_amortization.csv"))
+
+        # Synchronised, warmed-up, repeated timing.  The per-scene wall clock
+        # recorded inside SceneSolution is adequate for a CPU smoke test and
+        # wrong on a GPU: CUDA kernels are asynchronous, so an unsynchronised
+        # timer measures enqueue time, and the error is larger for the faster
+        # method -- the direction that flatters an amortized model.  Quote the
+        # numbers from this file, not from the solution objects.
+        from deepdisc_time.eval.timing import benchmark_backends
+
+        timing = benchmark_backends(
+            backends,
+            seqs,
+            n_repeats=args.timing_repeats,
+            n_warmup=args.timing_warmup,
+            device=args.device,
+        )
+        write_csv(timing, os.path.join(args.out, "experiment_b_timing.csv"))
         return
 
     recs = experiment_c_epoch_ablation(seqs, temporal, static)
