@@ -1,0 +1,56 @@
+[project]
+name = "deepdisc-time"
+description = "Amortized scene-level inference for blended variable sources in Rubin/LSST."
+license = {file = "LICENSE"}
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Xin Liu Research Group", email = "xinliuxl@illinois.edu" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dynamic = ["version"]
+dependencies = [
+    "numpy>=1.24",
+    "scipy",
+    "torch>=2.1",
+    "astropy>=6.0",
+    "h5py",
+]
+
+[project.optional-dependencies]
+# The Detectron2 production path. deepdisc and detectron2 are installed from
+# source, not PyPI; see README for the DeltaAI recipe.
+deepdisc = ["deepdisc", "omegaconf", "fvcore"]
+# The scarlet2-TD reference baseline. Requires a jaxlib matching the local
+# CUDA stack, so it is not pinned here.
+scarlet2 = ["scarlet2", "equinox"]
+sim = ["galsim"]
+dev = ["pytest", "pytest-cov", "ruff", "black", "sphinx", "sphinx-rtd-theme"]
+
+[build-system]
+requires = ["setuptools>=62", "setuptools_scm>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "src/deepdisc_time/_version.py"
+fallback_version = "0.1.0"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::UserWarning"]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
